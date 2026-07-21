@@ -465,8 +465,8 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
       <input type="text" id="walkin-nome" required autocomplete="off">
     </div>
     <div class="campo">
-      <label for="walkin-contatto">Contatto (facoltativo)</label>
-      <input type="text" id="walkin-contatto" autocomplete="off">
+      <label for="walkin-telefono">Numero di telefono (facoltativo)</label>
+      <input type="tel" id="walkin-telefono" inputmode="tel" autocomplete="off">
     </div>
     <div class="campo">
       <label for="walkin-evento">Evento / data</label>
@@ -498,26 +498,34 @@ const CHIAVE_STORAGE = 'gmc-checkin-eventi-v1';
 // Massimo di card mostrate insieme (per tenere fluida la pagina)
 const RISULTATI_MAX = 150;
 
-// Nomi di colonna riconosciuti all'import (confronto senza
-// maiuscole ne' accenti). Il primo alias che combacia vince.
+// Nomi di colonna riconosciuti all'import (confronto senza maiuscole,
+// accenti, underscore o trattini). Copre i tre formati usati davvero:
+// gestionale prenotazioni, export lead Meta Ads, risposte Google Forms.
 // Per riconoscere una colonna nuova basta aggiungere qui il suo nome.
 const ALIAS_COLONNE = {
-  nomeCompleto: ['nome cliente', 'nome e cognome', 'nominativo', 'cliente'],
+  nomeCompleto: ['nome cliente', 'nome e cognome', 'full name', 'nominativo', 'cliente'],
   nome:         ['nome'],
   cognome:      ['cognome'],
-  evento:       ['data'],
+  evento:       ['data evento', 'data'],
+  // Colonna unica "data + orario scelto" (Meta Ads e Google Forms):
+  // viene divisa in data evento e slot orario
+  sceltaDataOra: ['scegli data e orario', 'a quale slot orario', 'data e orario', 'giorno e orario'],
   fascia:       ['fascia'],
   orarioFascia: ['orario fascia'],
   slot:         ['slot'],
   orarioSlot:   ['orario slot'],
-  contatto:     ['contatto', 'telefono', 'cellulare', 'email', 'mail'],
-  stato:        ['stato'],
+  telefono:     ['numero di telefono', 'phone number', 'telefono', 'cellulare', 'contatto', 'phone', 'tel'],
+  email:        ['e mail', 'email', 'mail'],
+  stato:        ['stato prenotazione', 'lead status', 'stato', 'status'],
   persone:      ['n. persone', 'persone', 'pax', 'ospiti'],
   note:         ['note', 'commenti'],
 };
 
 // Intestazioni usate per i walk-in se non e' ancora stata caricata una lista
-const INTESTAZIONI_BASE = ['Nome cliente', 'Data', 'Contatto', 'Stato prenotazione'];
+const INTESTAZIONI_BASE = ['Nome cliente', 'Data', 'Numero di telefono', 'Stato prenotazione'];
+
+// Righe di prova generate dai form (es. "test lead: dummy data" di Meta): ignorate
+const RIGA_DI_TEST = /test lead|dummy data/i;
 
 /* ============================================================
    STATO DELL'APPLICAZIONE
@@ -531,7 +539,7 @@ let query = '';                // testo digitato nella ricerca
 /* Ogni record ha questa forma:
    {
      id: 'r-...',              identificativo interno
-     nome, evento, fascia, slot, contatto, stato, persone, note,
+     nome, evento, fascia, slot, telefono, email, stato, persone, note,
      presente: true/false,
      orarioCheckin: '2026-07-21T15:30:00.000Z' oppure null,
      walkin: true/false,
@@ -544,12 +552,14 @@ let query = '';                // testo digitato nella ricerca
    UTILITY
    ============================================================ */
 
-// Minuscole, senza accenti, spazi compattati: per confronti tolleranti
+// Minuscole, senza accenti, underscore e trattini come spazi:
+// cosi' "full_name" combacia con "full name" e "e-mail" con "e mail"
 function normalizza(testo) {
   return String(testo || '')
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_\-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -562,6 +572,15 @@ function nuovoId() { return 'r-' + (contatoreId++); }
 // Include fascia e slot per non perdere due omonimi nello stesso evento.
 function chiaveRecord(r) {
   return [r.nome, r.evento, r.fascia, r.slot].map(normalizza).join('|');
+}
+
+// Uniforma la data evento: "15 luglio" e "15 Luglio" diventano lo stesso
+// gruppo, cosi' riepilogo e filtri non si sdoppiano per una maiuscola
+function canonicalizzaEvento(testo) {
+  return String(testo || '').replace(/\s+/g, ' ').trim()
+    .split(' ')
+    .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' ');
 }
 
 // Protezione da caratteri speciali quando il testo finisce nell'HTML
@@ -593,7 +612,7 @@ function libreriaPronta() { return typeof XLSX !== 'undefined'; }
 function salvaStato() {
   try {
     localStorage.setItem(CHIAVE_STORAGE, JSON.stringify({
-      versione: 1,
+      versione: 2,
       records: records,
       intestazioniOriginali: intestazioniOriginali,
     }));
@@ -609,6 +628,16 @@ function caricaStato() {
     const dati = JSON.parse(grezzo);
     records = Array.isArray(dati.records) ? dati.records : [];
     intestazioniOriginali = Array.isArray(dati.intestazioniOriginali) ? dati.intestazioniOriginali : [];
+    // Migrazione dalla versione 1: il vecchio campo unico "contatto"
+    // diventa telefono (se contiene un numero) oppure email
+    if (dati.versione === 1) {
+      for (const r of records) {
+        const c = String(r.contatto || '');
+        r.telefono = /\d{5,}/.test(c.replace(/[\s.\/-]/g, '')) ? c : (r.telefono || '');
+        r.email = (!r.telefono && c) ? c : (r.email || '');
+        delete r.contatto;
+      }
+    }
   } catch (e) {
     // Dati corrotti: si riparte da vuoto senza bloccare la pagina
     records = [];
@@ -650,9 +679,10 @@ function mappaColonne(intestazioni) {
   return mappa;
 }
 
-// Trasforma le righe del foglio in record dell'applicazione
+// Trasforma le righe del foglio in record dell'applicazione.
+// righe[0] deve essere la riga di intestazione.
 function estraiRecords(righe) {
-  if (!righe.length) return { records: [], intestazioni: [] };
+  if (!righe.length) return { records: [], intestazioni: [], mappa: {}, testIgnorati: 0 };
 
   const intestazioni = righe[0].map(h => String(h || '').trim());
   const mappa = mappaColonne(intestazioni);
@@ -660,6 +690,7 @@ function estraiRecords(righe) {
     mappa[campo] !== undefined ? String(riga[mappa[campo]] || '').trim() : '';
 
   const estratti = [];
+  let testIgnorati = 0;
   for (let i = 1; i < righe.length; i++) {
     const riga = righe[i];
     if (!riga || riga.every(c => String(c || '').trim() === '')) continue;
@@ -667,7 +698,21 @@ function estraiRecords(righe) {
     // Nome: colonna unica, oppure "Nome" + "Cognome" separate
     let nome = val(riga, 'nomeCompleto');
     if (!nome) nome = [val(riga, 'nome'), val(riga, 'cognome')].filter(Boolean).join(' ');
-    if (!nome) continue; // righe senza nome: ignorate
+    if (!nome) continue; // righe senza nome (es. slot liberi): ignorate
+    if (RIGA_DI_TEST.test(nome)) { testIgnorati++; continue; } // lead di prova dei form
+
+    // Data evento e slot. Se il file ha la colonna combinata
+    // "data + orario scelto" (es. "17 Luglio ore 17:00"), la divide:
+    // la parte prima di "ore" diventa la data, il resto lo slot.
+    let evento = val(riga, 'evento');
+    let slot = [val(riga, 'slot'), val(riga, 'orarioSlot')].filter(Boolean).join(' ');
+    // Nei moduli Meta il valore arriva con underscore: "15_luglio_2026_ore_14:00"
+    const scelta = val(riga, 'sceltaDataOra').replace(/_/g, ' ');
+    if (scelta) {
+      const m = scelta.match(/^(.*?)[\s,]*\bore\b\s*(.*)$/i);
+      if (!evento) evento = m ? m[1].trim() : scelta;
+      if (!slot && m && m[2]) slot = 'ore ' + m[2].trim();
+    }
 
     // Riga originale conservata per intero (anche le colonne non riconosciute)
     const origRow = {};
@@ -678,10 +723,11 @@ function estraiRecords(righe) {
     estratti.push({
       id: nuovoId(),
       nome: nome,
-      evento: val(riga, 'evento') || 'Senza data',
+      evento: canonicalizzaEvento(evento) || 'Senza data',
       fascia: [val(riga, 'fascia'), val(riga, 'orarioFascia')].filter(Boolean).join(' '),
-      slot: [val(riga, 'slot'), val(riga, 'orarioSlot')].filter(Boolean).join(' '),
-      contatto: val(riga, 'contatto'),
+      slot: slot,
+      telefono: val(riga, 'telefono'),
+      email: val(riga, 'email'),
       stato: val(riga, 'stato'),
       persone: val(riga, 'persone'),
       note: val(riga, 'note'),
@@ -691,7 +737,28 @@ function estraiRecords(righe) {
       origRow: origRow,
     });
   }
-  return { records: estratti, intestazioni: intestazioni.filter(Boolean) };
+  return { records: estratti, intestazioni: intestazioni.filter(Boolean), mappa: mappa, testIgnorati: testIgnorati };
+}
+
+// Cerca la tabella prenotati dentro il file: prova ogni foglio e le prime
+// 10 righe come possibile intestazione (i gestionali hanno spesso righe di
+// titolo sopra la tabella). Vince il foglio che produce piu' record.
+function trovaTabella(workbook) {
+  let migliore = null;
+  for (const nomeFoglio of workbook.SheetNames) {
+    const righe = XLSX.utils.sheet_to_json(workbook.Sheets[nomeFoglio],
+      { header: 1, defval: '', raw: false, blankrows: false });
+    for (let i = 0; i < Math.min(10, righe.length); i++) {
+      const mappa = mappaColonne(righe[i].map(h => String(h || '').trim()));
+      if (mappa.nomeCompleto === undefined && mappa.nome === undefined) continue;
+      const esito = estraiRecords(righe.slice(i));
+      if (!migliore || esito.records.length > migliore.esito.records.length) {
+        migliore = { esito: esito, nomeFoglio: nomeFoglio };
+      }
+      break; // prima intestazione plausibile del foglio: basta questa
+    }
+  }
+  return migliore;
 }
 
 // Merge intelligente: il file aggiorna la lista senza perdere i check-in.
@@ -712,7 +779,7 @@ function uniscoRecords(nuovi) {
     if (ex) {
       // Aggiorna i dati di prenotazione, conserva presenza e orario.
       // Se un walk-in compare nel file aggiornato, diventa un prenotato.
-      ex.contatto = n.contatto; ex.stato = n.stato;
+      ex.telefono = n.telefono; ex.email = n.email; ex.stato = n.stato;
       ex.persone = n.persone; ex.note = n.note;
       ex.origRow = n.origRow; ex.walkin = false;
       aggiornati++;
@@ -740,13 +807,19 @@ async function importaFile(file) {
   try {
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
-    const foglio = workbook.Sheets[workbook.SheetNames[0]];
-    // header:1 = righe come array; raw:false = date e numeri come testo visibile
-    const righe = XLSX.utils.sheet_to_json(foglio, { header: 1, defval: '', raw: false, blankrows: false });
 
-    const { records: nuovi, intestazioni } = estraiRecords(righe);
+    // Cerca la tabella in tutti i fogli e sotto eventuali righe di titolo
+    const tabella = trovaTabella(workbook);
+    if (!tabella) {
+      const prime = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]],
+        { header: 1, defval: '', raw: false, blankrows: false });
+      const viste = (prime[0] || []).filter(Boolean).slice(0, 5).join(', ');
+      mostraToast('Colonna del nome non trovata. Colonne lette: ' + (viste || 'nessuna'));
+      return;
+    }
+    const { records: nuovi, intestazioni, testIgnorati } = tabella.esito;
     if (!nuovi.length) {
-      mostraToast('Nessun prenotato trovato nel file: controlla le colonne');
+      mostraToast('Intestazioni riconosciute ma nessun prenotato con nome nel file');
       return;
     }
     intestazioniOriginali = intestazioni;
@@ -758,6 +831,8 @@ async function importaFile(file) {
     if (esito.aggiornati) msg += ', ' + esito.aggiornati + ' aggiornati';
     if (esito.rimossi) msg += ', ' + esito.rimossi + ' rimossi';
     if (esito.duplicati) msg += ', ' + esito.duplicati + ' righe doppie ignorate';
+    if (testIgnorati) msg += ', ' + testIgnorati + ' righe di prova ignorate';
+    if (workbook.SheetNames.length > 1) msg += ' (foglio "' + tabella.nomeFoglio + '")';
     mostraToast(msg);
   } catch (e) {
     mostraToast('File non leggibile: usa un CSV o un XLSX esportato dal foglio');
@@ -888,7 +963,8 @@ function disegnaLista() {
     const sub = [];
     if (r.walkin) sub.push('<span class="badge badge--walkin">Walk-in</span>');
     else if (r.stato) sub.push('<span class="badge">' + escapeHtml(r.stato) + '</span>');
-    if (r.contatto) sub.push(escapeHtml(r.contatto));
+    if (r.telefono) sub.push(escapeHtml(r.telefono));
+    if (r.email) sub.push(escapeHtml(r.email));
     if (r.persone) sub.push(escapeHtml(r.persone) + ' pers.');
     if (r.note) sub.push(escapeHtml(r.note));
 
@@ -948,7 +1024,7 @@ function apriDialogWalkin() {
 
   // Nome precompilato con quanto digitato nella ricerca
   document.getElementById('walkin-nome').value = query.trim();
-  document.getElementById('walkin-contatto').value = '';
+  document.getElementById('walkin-telefono').value = '';
   document.getElementById('walkin-presente').checked = true;
   document.getElementById('dialog-walkin').showModal();
 }
@@ -957,7 +1033,7 @@ function salvaWalkin() {
   const nome = document.getElementById('walkin-nome').value.trim();
   if (!nome) return;
   const evento = document.getElementById('walkin-evento').value || 'Senza data';
-  const contatto = document.getElementById('walkin-contatto').value.trim();
+  const telefono = document.getElementById('walkin-telefono').value.trim();
   const presente = document.getElementById('walkin-presente').checked;
 
   // Riga originale costruita con le intestazioni del file caricato,
@@ -971,7 +1047,7 @@ function salvaWalkin() {
   scrivi('nomeCompleto', nome);
   if (mappa.nomeCompleto === undefined) scrivi('nome', nome);
   scrivi('evento', evento === 'Senza data' ? '' : evento);
-  scrivi('contatto', contatto);
+  scrivi('telefono', telefono);
   scrivi('stato', 'Walk-in');
 
   records.push({
@@ -979,7 +1055,8 @@ function salvaWalkin() {
     nome: nome,
     evento: evento,
     fascia: '', slot: '',
-    contatto: contatto,
+    telefono: telefono,
+    email: '',
     stato: 'Walk-in',
     persone: '', note: '',
     presente: presente,
