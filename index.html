@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#FAFAF8">
+<title>Check-in Eventi</title>
+
+<!-- ============================================================
+     CHECK-IN EVENTI - Pop-up retail (Meet & Greet, Aperitivo Inclusivo)
+     ------------------------------------------------------------
+     Un solo file: HTML + CSS + JavaScript. Niente server, niente build.
+     Funziona su tablet (iPad / Android) aperto dal browser.
+
+     COME FUNZIONA
+     1. "Carica lista": importa il file CSV o XLSX dei prenotati.
+     2. Cerca il nome, tocca "Presente" quando la persona arriva.
+     3. Chi non era prenotato: "Aggiungi walk-in".
+     4. "Esporta": scarica un XLSX con presenze e walk-in.
+
+     I dati restano SOLO su questo dispositivo (localStorage).
+     Se la pagina si ricarica per sbaglio, non si perde nulla.
+
+     PER MODIFICARE (anche senza essere sviluppatori)
+     - Testi dei pulsanti e messaggi: cercali qui sotto nell'HTML.
+     - Nomi di colonna riconosciuti all'import: sezione CONFIG del JS.
+     - Colori: variabili in cima al blocco <style>.
+     ============================================================ -->
+
+<!-- SheetJS: libreria che legge e scrive CSV/XLSX. Caricata da internet
+     solo la prima volta; serve rete al primo avvio. Senza di essa
+     ricerca e check-in funzionano comunque, import/export no. -->
+<script defer src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+<style>
+/* ============================================================
+   COLORI E MISURE (modificabili)
+   Tema chiaro fisso ad alto contrasto: pensato per ambienti
+   molto luminosi come un centro commerciale.
+   ============================================================ */
+:root {
+  --inchiostro: #17181C;      /* testo principale, quasi nero        */
+  --grigio: #5C5F66;          /* testo secondario                    */
+  --banco: #FAFAF8;           /* sfondo pagina                       */
+  --carta: #FFFFFF;           /* sfondo card                         */
+  --linea: #E3E1DB;           /* bordi e divisori                    */
+  --spritz: #C2410C;          /* accento azioni (arancio bruciato)   */
+  --spritz-scuro: #9A3412;    /* accento premuto                     */
+  --verde: #15803D;           /* stato Presente                      */
+  --verde-tinta: #E9F6EE;     /* sfondo card Presente                */
+  --rosso: #B91C1C;           /* azioni distruttive                  */
+  --tocco: 52px;              /* altezza minima elementi toccabili   */
+}
+
+/* Reset minimo */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; touch-action: manipulation; }
+input, select { font: inherit; color: inherit; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--banco);
+  color: var(--inchiostro);
+  font-size: 17px;
+  line-height: 1.4;
+  min-height: 100vh;
+}
+
+/* Focus visibile per navigazione da tastiera */
+:focus-visible { outline: 3px solid var(--spritz); outline-offset: 2px; }
+
+/* Riduzione movimento se richiesta dal sistema */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* ============================================================
+   INTESTAZIONE: titolo + azioni principali
+   ============================================================ */
+.testata {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.testata h1 {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.testata h1 small {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--grigio);
+}
+.azioni { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Pulsanti */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--tocco);
+  padding: 0 20px;
+  border-radius: 12px;
+  font-size: 17px;
+  font-weight: 700;
+  background: var(--spritz);
+  color: #fff;
+  transition: background 120ms ease, transform 80ms ease;
+}
+.btn:active { background: var(--spritz-scuro); transform: scale(0.98); }
+.btn--fantasma {
+  background: var(--carta);
+  color: var(--inchiostro);
+  border: 2px solid var(--linea);
+}
+.btn--fantasma:active { background: var(--banco); transform: scale(0.98); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ============================================================
+   AVVISO LIBRERIA MANCANTE (offline al primo avvio)
+   ============================================================ */
+.avviso-libreria {
+  display: none;
+  max-width: 900px;
+  margin: 0 auto 8px;
+  padding: 12px 20px;
+  background: #FEF3C7;
+  border: 1px solid #F59E0B;
+  border-radius: 12px;
+  font-size: 15px;
+}
+.avviso-libreria.visibile { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.avviso-libreria button { font-weight: 700; color: var(--spritz); min-height: 44px; padding: 0 12px; }
+
+/* ============================================================
+   ZONA FISSA: riepilogo redemption + ricerca + filtri data
+   Resta sempre visibile mentre si scorre la lista.
+   ============================================================ */
+.zona-fissa {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--banco);
+  border-bottom: 1px solid var(--linea);
+  padding: 8px 0 12px;
+}
+.zona-fissa__interno { max-width: 900px; margin: 0 auto; padding: 0 20px; }
+
+/* --- Riepilogo redemption: una scheda per data evento --- */
+.riepilogo {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 10px;
+}
+.riepilogo:empty { display: none; }
+.riepilogo__card {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--carta);
+  border: 1px solid var(--linea);
+  border-radius: 14px;
+  padding: 10px 16px;
+}
+.riepilogo__card.attiva { border-color: var(--spritz); border-width: 2px; }
+.riepilogo__data {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--grigio);
+  max-width: 130px;
+}
+.riepilogo__numeri { font-size: 14px; color: var(--grigio); white-space: nowrap; }
+.riepilogo__numeri strong { color: var(--inchiostro); font-variant-numeric: tabular-nums; }
+.riepilogo__perc {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--verde);
+}
+
+/* --- Campo di ricerca grande --- */
+.ricerca { position: relative; }
+.ricerca input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-height: 60px;
+  padding: 0 56px 0 18px;
+  font-size: 20px;
+  font-weight: 600;
+  background: var(--carta);
+  border: 2px solid var(--inchiostro);
+  border-radius: 14px;
+}
+.ricerca input::placeholder { color: var(--grigio); font-weight: 400; }
+.ricerca__pulisci {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  font-size: 22px;
+  color: var(--grigio);
+  display: none;
+}
+.ricerca__pulisci.visibile { display: block; }
+
+/* --- Filtri per data (chip) --- */
+.chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin-top: 10px;
+}
+.chips:empty { display: none; }
+.chip {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 2px solid var(--linea);
+  background: var(--carta);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--grigio);
+}
+.chip[aria-pressed="true"] {
+  border-color: var(--spritz);
+  color: var(--spritz);
+  background: #FFF7ED;
+}
+
+/* ============================================================
+   LISTA RISULTATI
+   ============================================================ */
+.lista {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 16px 20px 40px;
+  display: grid;
+  gap: 10px;
+}
+.card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--carta);
+  border: 1px solid var(--linea);
+  border-left: 5px solid var(--linea);
+  border-radius: 14px;
+  padding: 14px 16px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.card--presente {
+  background: var(--verde-tinta);
+  border-color: var(--verde);
+}
+.card__info { flex: 1; min-width: 0; }
+.card__nome { font-size: 21px; font-weight: 800; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.card__meta { font-size: 15px; color: var(--grigio); margin-top: 2px; }
+.card__sub {
+  font-size: 14px;
+  color: var(--grigio);
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--banco);
+  border: 1px solid var(--linea);
+  color: var(--grigio);
+}
+.badge--walkin { background: #FFF7ED; border-color: var(--spritz); color: var(--spritz); }
+
+/* Il timbro "Presente": pulsante grande, un tocco per il check-in */
+.btn-presente {
+  flex: 0 0 auto;
+  min-width: 128px;
+  min-height: 56px;
+  border-radius: 12px;
+  border: 2px solid var(--linea);
+  background: var(--carta);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--grigio);
+  transition: all 150ms ease;
+}
+.btn-presente[aria-pressed="true"] {
+  background: var(--verde);
+  border-color: var(--verde);
+  color: #fff;
+}
+
+/* Stato vuoto: nessun risultato o nessuna lista caricata */
+.vuoto {
+  text-align: center;
+  padding: 48px 20px;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+.vuoto p { font-size: 18px; color: var(--grigio); max-width: 420px; }
+.vuoto .btn { min-width: 260px; }
+
+.nota-limite {
+  text-align: center;
+  font-size: 14px;
+  color: var(--grigio);
+  padding: 8px;
+}
+
+/* ============================================================
+   FINESTRA WALK-IN
+   ============================================================ */
+dialog {
+  border: none;
+  border-radius: 18px;
+  padding: 0;
+  width: min(480px, calc(100vw - 32px));
+  margin: auto;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.25);
+}
+dialog::backdrop { background: rgba(23,24,28,0.5); }
+.dialog__interno { padding: 24px; display: grid; gap: 16px; }
+.dialog__interno h2 { font-size: 20px; font-weight: 800; }
+.campo { display: grid; gap: 6px; }
+.campo label { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--grigio); }
+.campo input, .campo select {
+  min-height: var(--tocco);
+  padding: 0 14px;
+  font-size: 18px;
+  border: 2px solid var(--linea);
+  border-radius: 12px;
+  background: var(--carta);
+  width: 100%;
+}
+.campo--check { display: flex; align-items: center; gap: 12px; }
+.campo--check input { width: 26px; height: 26px; min-height: 0; accent-color: var(--verde); }
+.campo--check label { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--inchiostro); }
+.dialog__azioni { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ============================================================
+   PIE' DI PAGINA + TOAST
+   ============================================================ */
+.pie {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 8px 20px 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  color: var(--grigio);
+}
+.pie button { color: var(--rosso); font-weight: 700; min-height: 44px; padding: 0 8px; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%) translateY(calc(100% + 40px));
+  visibility: hidden;
+  pointer-events: none;
+  background: var(--inchiostro);
+  color: #fff;
+  padding: 14px 22px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  max-width: calc(100vw - 40px);
+  text-align: center;
+  transition: transform 200ms ease;
+  z-index: 50;
+}
+.toast.visibile { transform: translateX(-50%) translateY(0); visibility: visible; }
+</style>
+</head>
+<body>
+
+<!-- ============ INTESTAZIONE ============ -->
+<header class="testata">
+  <h1>Check-in Eventi<small>Pop-up retail</small></h1>
+  <div class="azioni">
+    <button class="btn btn--fantasma" id="btn-walkin-testata" type="button">+ Walk-in</button>
+    <button class="btn btn--fantasma" id="btn-esporta" type="button">Esporta</button>
+    <button class="btn" id="btn-carica" type="button">Carica lista</button>
+    <!-- Input file nascosto, attivato dal pulsante "Carica lista" -->
+    <input type="file" id="input-file" accept=".csv,.xlsx,.xls" hidden>
+  </div>
+</header>
+
+<!-- Avviso mostrato solo se SheetJS non si e' caricata (niente rete al primo avvio) -->
+<div class="avviso-libreria" id="avviso-libreria" role="alert">
+  <span>Libreria file non caricata: serve internet la prima volta. Ricerca e check-in funzionano comunque.</span>
+  <button type="button" id="btn-riprova-libreria">Riprova</button>
+</div>
+
+<!-- ============ ZONA SEMPRE VISIBILE ============ -->
+<div class="zona-fissa">
+  <div class="zona-fissa__interno">
+    <!-- Riepilogo redemption per data evento (riempito dal JS) -->
+    <div class="riepilogo" id="riepilogo"></div>
+    <!-- Ricerca -->
+    <div class="ricerca">
+      <input type="search" id="ricerca" placeholder="Cerca nome o cognome..."
+             autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Cerca prenotazione per nome">
+      <button class="ricerca__pulisci" id="btn-pulisci" type="button" aria-label="Svuota ricerca">&times;</button>
+    </div>
+    <!-- Filtri per data evento (riempiti dal JS) -->
+    <div class="chips" id="chips" role="group" aria-label="Filtra per data evento"></div>
+  </div>
+</div>
+
+<!-- ============ LISTA RISULTATI ============ -->
+<main class="lista" id="lista" aria-live="polite"></main>
+
+<!-- ============ PIE' DI PAGINA ============ -->
+<footer class="pie">
+  <span id="contatore"></span>
+  <button type="button" id="btn-svuota">Svuota tutto</button>
+</footer>
+
+<!-- ============ FINESTRA AGGIUNGI WALK-IN ============ -->
+<dialog id="dialog-walkin">
+  <form class="dialog__interno" id="form-walkin" method="dialog">
+    <h2>Aggiungi walk-in</h2>
+    <div class="campo">
+      <label for="walkin-nome">Nome e cognome</label>
+      <input type="text" id="walkin-nome" required autocomplete="off">
+    </div>
+    <div class="campo">
+      <label for="walkin-contatto">Contatto (facoltativo)</label>
+      <input type="text" id="walkin-contatto" autocomplete="off">
+    </div>
+    <div class="campo">
+      <label for="walkin-evento">Evento / data</label>
+      <select id="walkin-evento"></select>
+    </div>
+    <div class="campo--check">
+      <input type="checkbox" id="walkin-presente" checked>
+      <label for="walkin-presente">Segna subito come presente</label>
+    </div>
+    <div class="dialog__azioni">
+      <button class="btn btn--fantasma" type="button" id="btn-walkin-annulla">Annulla</button>
+      <button class="btn" type="submit">Salva walk-in</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Toast per messaggi brevi -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+/* ============================================================
+   CONFIG (modificabile senza toccare il resto)
+   ============================================================ */
+
+// Chiave con cui i dati vengono salvati nel browser del tablet
+const CHIAVE_STORAGE = 'gmc-checkin-eventi-v1';
+
+// Massimo di card mostrate insieme (per tenere fluida la pagina)
+const RISULTATI_MAX = 150;
+
+// Nomi di colonna riconosciuti all'import (confronto senza
+// maiuscole ne' accenti). Il primo alias che combacia vince.
+// Per riconoscere una colonna nuova basta aggiungere qui il suo nome.
+const ALIAS_COLONNE = {
+  nomeCompleto: ['nome cliente', 'nome e cognome', 'nominativo', 'cliente'],
+  nome:         ['nome'],
+  cognome:      ['cognome'],
+  evento:       ['data'],
+  fascia:       ['fascia'],
+  orarioFascia: ['orario fascia'],
+  slot:         ['slot'],
+  orarioSlot:   ['orario slot'],
+  contatto:     ['contatto', 'telefono', 'cellulare', 'email', 'mail'],
+  stato:        ['stato'],
+  persone:      ['n. persone', 'persone', 'pax', 'ospiti'],
+  note:         ['note', 'commenti'],
+};
+
+// Intestazioni usate per i walk-in se non e' ancora stata caricata una lista
+const INTESTAZIONI_BASE = ['Nome cliente', 'Data', 'Contatto', 'Stato prenotazione'];
+
+/* ============================================================
+   STATO DELL'APPLICAZIONE
+   ============================================================ */
+
+let records = [];              // tutti i prenotati e i walk-in
+let intestazioniOriginali = [];// colonne del file importato, nell'ordine originale
+let filtroData = '';           // chip data attivo ('' = tutte)
+let query = '';                // testo digitato nella ricerca
+
+/* Ogni record ha questa forma:
+   {
+     id: 'r-...',              identificativo interno
+     nome, evento, fascia, slot, contatto, stato, persone, note,
+     presente: true/false,
+     orarioCheckin: '2026-07-21T15:30:00.000Z' oppure null,
+     walkin: true/false,
+     origRow: { 'Nome cliente': '...', ... }   riga originale del file,
+               conservata cosi' com'e' per non perdere nulla all'export
+   }
+*/
+
+/* ============================================================
+   UTILITY
+   ============================================================ */
+
+// Minuscole, senza accenti, spazi compattati: per confronti tolleranti
+function normalizza(testo) {
+  return String(testo || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Identificativo unico per i record
+let contatoreId = Date.now();
+function nuovoId() { return 'r-' + (contatoreId++); }
+
+// Chiave di confronto per il merge: stessa persona = stesso record.
+// Include fascia e slot per non perdere due omonimi nello stesso evento.
+function chiaveRecord(r) {
+  return [r.nome, r.evento, r.fascia, r.slot].map(normalizza).join('|');
+}
+
+// Protezione da caratteri speciali quando il testo finisce nell'HTML
+function escapeHtml(testo) {
+  return String(testo || '')
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+// Toast: messaggio breve in basso, sparisce da solo
+let timerToast = null;
+function mostraToast(messaggio) {
+  const el = document.getElementById('toast');
+  el.textContent = messaggio;
+  el.classList.add('visibile');
+  clearTimeout(timerToast);
+  timerToast = setTimeout(() => el.classList.remove('visibile'), 3500);
+}
+
+// La libreria SheetJS e' disponibile?
+function libreriaPronta() { return typeof XLSX !== 'undefined'; }
+
+/* ============================================================
+   PERSISTENZA (localStorage)
+   I dati vengono salvati a ogni modifica: se la pagina si
+   ricarica, tutto viene ripristinato.
+   ============================================================ */
+
+function salvaStato() {
+  try {
+    localStorage.setItem(CHIAVE_STORAGE, JSON.stringify({
+      versione: 1,
+      records: records,
+      intestazioniOriginali: intestazioniOriginali,
+    }));
+  } catch (e) {
+    mostraToast('Attenzione: salvataggio non riuscito (memoria piena?)');
+  }
+}
+
+function caricaStato() {
+  try {
+    const grezzo = localStorage.getItem(CHIAVE_STORAGE);
+    if (!grezzo) return;
+    const dati = JSON.parse(grezzo);
+    records = Array.isArray(dati.records) ? dati.records : [];
+    intestazioniOriginali = Array.isArray(dati.intestazioniOriginali) ? dati.intestazioniOriginali : [];
+  } catch (e) {
+    // Dati corrotti: si riparte da vuoto senza bloccare la pagina
+    records = [];
+    intestazioniOriginali = [];
+  }
+}
+
+/* ============================================================
+   IMPORT DELLA LISTA (CSV / XLSX)
+   ============================================================ */
+
+// Associa le colonne del file ai campi conosciuti.
+// Ritorna un oggetto tipo { nomeCompleto: 2, evento: 0, ... } (indici colonna).
+function mappaColonne(intestazioni) {
+  const mappa = {};
+  const usate = new Set();
+  const normalizzate = intestazioni.map(normalizza);
+
+  // Coppie campo/alias in ordine: prima gli alias piu' specifici (piu' lunghi),
+  // cosi' "orario fascia" viene assegnata prima che "fascia" possa prenderla.
+  const coppie = [];
+  for (const campo in ALIAS_COLONNE) {
+    for (const alias of ALIAS_COLONNE[campo]) coppie.push({ campo, alias });
+  }
+  coppie.sort((a, b) => b.alias.length - a.alias.length);
+
+  // Primo giro: corrispondenza esatta
+  for (const { campo, alias } of coppie) {
+    if (mappa[campo] !== undefined) continue;
+    const i = normalizzate.findIndex((h, idx) => !usate.has(idx) && h === alias);
+    if (i !== -1) { mappa[campo] = i; usate.add(i); }
+  }
+  // Secondo giro: l'intestazione contiene l'alias (es. "Data evento" per "data")
+  for (const { campo, alias } of coppie) {
+    if (mappa[campo] !== undefined) continue;
+    const i = normalizzate.findIndex((h, idx) => !usate.has(idx) && h.includes(alias));
+    if (i !== -1) { mappa[campo] = i; usate.add(i); }
+  }
+  return mappa;
+}
+
+// Trasforma le righe del foglio in record dell'applicazione
+function estraiRecords(righe) {
+  if (!righe.length) return { records: [], intestazioni: [] };
+
+  const intestazioni = righe[0].map(h => String(h || '').trim());
+  const mappa = mappaColonne(intestazioni);
+  const val = (riga, campo) =>
+    mappa[campo] !== undefined ? String(riga[mappa[campo]] || '').trim() : '';
+
+  const estratti = [];
+  for (let i = 1; i < righe.length; i++) {
+    const riga = righe[i];
+    if (!riga || riga.every(c => String(c || '').trim() === '')) continue;
+
+    // Nome: colonna unica, oppure "Nome" + "Cognome" separate
+    let nome = val(riga, 'nomeCompleto');
+    if (!nome) nome = [val(riga, 'nome'), val(riga, 'cognome')].filter(Boolean).join(' ');
+    if (!nome) continue; // righe senza nome: ignorate
+
+    // Riga originale conservata per intero (anche le colonne non riconosciute)
+    const origRow = {};
+    intestazioni.forEach((h, idx) => {
+      if (h) origRow[h] = String(riga[idx] || '').trim();
+    });
+
+    estratti.push({
+      id: nuovoId(),
+      nome: nome,
+      evento: val(riga, 'evento') || 'Senza data',
+      fascia: [val(riga, 'fascia'), val(riga, 'orarioFascia')].filter(Boolean).join(' '),
+      slot: [val(riga, 'slot'), val(riga, 'orarioSlot')].filter(Boolean).join(' '),
+      contatto: val(riga, 'contatto'),
+      stato: val(riga, 'stato'),
+      persone: val(riga, 'persone'),
+      note: val(riga, 'note'),
+      presente: false,
+      orarioCheckin: null,
+      walkin: false,
+      origRow: origRow,
+    });
+  }
+  return { records: estratti, intestazioni: intestazioni.filter(Boolean) };
+}
+
+// Merge intelligente: il file aggiorna la lista senza perdere i check-in.
+// - record gia' presente: dati prenotazione aggiornati, presenza conservata
+// - record nuovo: aggiunto
+// - record sparito dal file: rimosso solo se senza check-in e non walk-in
+function uniscoRecords(nuovi) {
+  const esistenti = new Map(records.map(r => [chiaveRecord(r), r]));
+  const chiaviNelFile = new Set();
+  let aggiunti = 0, aggiornati = 0, duplicati = 0;
+
+  for (const n of nuovi) {
+    const k = chiaveRecord(n);
+    if (chiaviNelFile.has(k)) { duplicati++; continue; } // riga doppia nel file
+    chiaviNelFile.add(k);
+
+    const ex = esistenti.get(k);
+    if (ex) {
+      // Aggiorna i dati di prenotazione, conserva presenza e orario.
+      // Se un walk-in compare nel file aggiornato, diventa un prenotato.
+      ex.contatto = n.contatto; ex.stato = n.stato;
+      ex.persone = n.persone; ex.note = n.note;
+      ex.origRow = n.origRow; ex.walkin = false;
+      aggiornati++;
+    } else {
+      records.push(n);
+      aggiunti++;
+    }
+  }
+
+  // Rimozione delle prenotazioni sparite dal file (es. disdette),
+  // ma mai di chi ha gia' fatto check-in e mai dei walk-in.
+  const prima = records.length;
+  records = records.filter(r => chiaviNelFile.has(chiaveRecord(r)) || r.walkin || r.presente);
+  const rimossi = prima - records.length;
+
+  return { aggiunti, aggiornati, rimossi, duplicati };
+}
+
+// Lettura del file scelto con "Carica lista"
+async function importaFile(file) {
+  if (!libreriaPronta()) {
+    mostraToast('Import non disponibile: libreria non caricata (serve internet)');
+    return;
+  }
+  try {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+    const foglio = workbook.Sheets[workbook.SheetNames[0]];
+    // header:1 = righe come array; raw:false = date e numeri come testo visibile
+    const righe = XLSX.utils.sheet_to_json(foglio, { header: 1, defval: '', raw: false, blankrows: false });
+
+    const { records: nuovi, intestazioni } = estraiRecords(righe);
+    if (!nuovi.length) {
+      mostraToast('Nessun prenotato trovato nel file: controlla le colonne');
+      return;
+    }
+    intestazioniOriginali = intestazioni;
+    const esito = uniscoRecords(nuovi);
+    salvaStato();
+    aggiornaTutto();
+
+    let msg = 'Lista caricata: ' + esito.aggiunti + ' nuovi';
+    if (esito.aggiornati) msg += ', ' + esito.aggiornati + ' aggiornati';
+    if (esito.rimossi) msg += ', ' + esito.rimossi + ' rimossi';
+    if (esito.duplicati) msg += ', ' + esito.duplicati + ' righe doppie ignorate';
+    mostraToast(msg);
+  } catch (e) {
+    mostraToast('File non leggibile: usa un CSV o un XLSX esportato dal foglio');
+  }
+}
+
+/* ============================================================
+   RICERCA E FILTRO
+   ============================================================ */
+
+// Tutte le date evento presenti, in ordine cronologico quando possibile
+function elencoEventi() {
+  const visti = new Set();
+  const eventi = [];
+  for (const r of records) {
+    if (!visti.has(r.evento)) { visti.add(r.evento); eventi.push(r.evento); }
+  }
+  // Ordina interpretando date tipo "12/09/2026" o "2026-09-12"; altrimenti alfabetico
+  const valore = (e) => {
+    const m = e.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+    if (m) {
+      let anno = parseInt(m[3], 10); if (anno < 100) anno += 2000;
+      return anno * 10000 + parseInt(m[2], 10) * 100 + parseInt(m[1], 10);
+    }
+    const iso = e.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (iso) return parseInt(iso[1], 10) * 10000 + parseInt(iso[2], 10) * 100 + parseInt(iso[3], 10);
+    return null;
+  };
+  return eventi.sort((a, b) => {
+    const va = valore(a), vb = valore(b);
+    if (va !== null && vb !== null) return va - vb;
+    if (va !== null) return -1;
+    if (vb !== null) return 1;
+    return a.localeCompare(b, 'it');
+  });
+}
+
+// Filtra i record in base a testo digitato e chip data attivo
+function recordFiltrati() {
+  const termini = normalizza(query).split(' ').filter(Boolean);
+  return records
+    .filter(r => !filtroData || r.evento === filtroData)
+    .filter(r => {
+      if (!termini.length) return true;
+      const nomeNorm = normalizza(r.nome);
+      return termini.every(t => nomeNorm.includes(t));
+    })
+    .sort((a, b) => a.nome.localeCompare(b.nome, 'it'));
+}
+
+/* ============================================================
+   RENDER (aggiornamento della pagina)
+   ============================================================ */
+
+function aggiornaTutto() {
+  disegnaRiepilogo();
+  disegnaChips();
+  disegnaLista();
+  disegnaContatore();
+}
+
+// Riepilogo redemption: prenotati, presenti, %, walk-in per ogni data
+function disegnaRiepilogo() {
+  const contenitore = document.getElementById('riepilogo');
+  const eventi = elencoEventi();
+  if (!eventi.length) { contenitore.innerHTML = ''; return; }
+
+  contenitore.innerHTML = eventi.map(evento => {
+    const delGiorno = records.filter(r => r.evento === evento);
+    const prenotati = delGiorno.filter(r => !r.walkin);
+    const presenti = prenotati.filter(r => r.presente).length;
+    const walkins = delGiorno.filter(r => r.walkin).length;
+    const perc = prenotati.length ? Math.round(presenti / prenotati.length * 100) : 0;
+    const attiva = filtroData === evento ? ' attiva' : '';
+    return '<div class="riepilogo__card' + attiva + '">' +
+      '<span class="riepilogo__data">' + escapeHtml(evento) + '</span>' +
+      '<span class="riepilogo__numeri">' +
+        '<strong>' + presenti + '</strong>/' + prenotati.length + ' presenti' +
+        (walkins ? ' &middot; <strong>+' + walkins + '</strong> walk-in' : '') +
+      '</span>' +
+      '<span class="riepilogo__perc">' + perc + '%</span>' +
+    '</div>';
+  }).join('');
+}
+
+// Chip per filtrare la lista per data evento
+function disegnaChips() {
+  const contenitore = document.getElementById('chips');
+  const eventi = elencoEventi();
+  if (eventi.length < 2) { contenitore.innerHTML = ''; filtroData = filtroData && eventi.includes(filtroData) ? filtroData : ''; return; }
+
+  const chip = (valore, testo) =>
+    '<button type="button" class="chip" data-evento="' + escapeHtml(valore) + '" aria-pressed="' +
+    (filtroData === valore ? 'true' : 'false') + '">' + escapeHtml(testo) + '</button>';
+
+  contenitore.innerHTML = chip('', 'Tutte le date') + eventi.map(e => chip(e, e)).join('');
+}
+
+// Lista risultati con il pulsante "Presente"
+function disegnaLista() {
+  const contenitore = document.getElementById('lista');
+
+  // Nessuna lista caricata: invito iniziale
+  if (!records.length) {
+    contenitore.innerHTML =
+      '<div class="vuoto">' +
+        '<p>Carica la lista dei prenotati per iniziare i check-in.</p>' +
+        '<button class="btn" type="button" data-azione="carica">Carica lista</button>' +
+      '</div>';
+    return;
+  }
+
+  const risultati = recordFiltrati();
+
+  // Ricerca senza corrispondenze: proposta walk-in
+  if (!risultati.length) {
+    contenitore.innerHTML =
+      '<div class="vuoto">' +
+        '<p>Nessuna prenotazione trovata' + (query ? ' per "' + escapeHtml(query) + '"' : '') + '.</p>' +
+        '<button class="btn" type="button" data-azione="apri-walkin">Aggiungi nuovo contatto</button>' +
+      '</div>';
+    return;
+  }
+
+  const visibili = risultati.slice(0, RISULTATI_MAX);
+  let html = visibili.map(r => {
+    const meta = [r.evento, r.fascia, r.slot].filter(Boolean).join(' &middot; ');
+    const sub = [];
+    if (r.walkin) sub.push('<span class="badge badge--walkin">Walk-in</span>');
+    else if (r.stato) sub.push('<span class="badge">' + escapeHtml(r.stato) + '</span>');
+    if (r.contatto) sub.push(escapeHtml(r.contatto));
+    if (r.persone) sub.push(escapeHtml(r.persone) + ' pers.');
+    if (r.note) sub.push(escapeHtml(r.note));
+
+    return '<article class="card' + (r.presente ? ' card--presente' : '') + '">' +
+      '<div class="card__info">' +
+        '<h3 class="card__nome">' + escapeHtml(r.nome) + '</h3>' +
+        (meta ? '<p class="card__meta">' + meta + '</p>' : '') +
+        (sub.length ? '<p class="card__sub">' + sub.join(' &middot; ') + '</p>' : '') +
+      '</div>' +
+      '<button class="btn-presente" type="button" data-azione="presenza" data-id="' + r.id + '" ' +
+        'aria-pressed="' + (r.presente ? 'true' : 'false') + '">' +
+        (r.presente ? '&#10003; Presente' : 'Presente') +
+      '</button>' +
+    '</article>';
+  }).join('');
+
+  if (risultati.length > RISULTATI_MAX) {
+    html += '<p class="nota-limite">Mostrati i primi ' + RISULTATI_MAX + ' di ' +
+      risultati.length + ': affina la ricerca per vedere gli altri.</p>';
+  }
+  contenitore.innerHTML = html;
+}
+
+function disegnaContatore() {
+  const el = document.getElementById('contatore');
+  if (!records.length) { el.textContent = ''; return; }
+  const presenti = records.filter(r => r.presente).length;
+  el.textContent = records.length + ' contatti in memoria, ' + presenti + ' presenti';
+}
+
+/* ============================================================
+   CHECK-IN
+   ============================================================ */
+
+function togglePresenza(id) {
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+  r.presente = !r.presente;
+  // Orario salvato in background, utile nell'export; non mostrato in pagina
+  r.orarioCheckin = r.presente ? new Date().toISOString() : null;
+  salvaStato();
+  aggiornaTutto();
+}
+
+/* ============================================================
+   WALK-IN
+   ============================================================ */
+
+function apriDialogWalkin() {
+  const select = document.getElementById('walkin-evento');
+  const eventi = elencoEventi();
+  select.innerHTML =
+    eventi.map(e => '<option value="' + escapeHtml(e) + '">' + escapeHtml(e) + '</option>').join('') +
+    '<option value="">Senza data</option>';
+  // Preseleziona il filtro data attivo, se c'e'
+  if (filtroData) select.value = filtroData;
+
+  // Nome precompilato con quanto digitato nella ricerca
+  document.getElementById('walkin-nome').value = query.trim();
+  document.getElementById('walkin-contatto').value = '';
+  document.getElementById('walkin-presente').checked = true;
+  document.getElementById('dialog-walkin').showModal();
+}
+
+function salvaWalkin() {
+  const nome = document.getElementById('walkin-nome').value.trim();
+  if (!nome) return;
+  const evento = document.getElementById('walkin-evento').value || 'Senza data';
+  const contatto = document.getElementById('walkin-contatto').value.trim();
+  const presente = document.getElementById('walkin-presente').checked;
+
+  // Riga originale costruita con le intestazioni del file caricato,
+  // cosi' il walk-in esce allineato agli altri nell'export
+  const intestazioni = intestazioniOriginali.length ? intestazioniOriginali : INTESTAZIONI_BASE.slice();
+  const mappa = mappaColonne(intestazioni);
+  const origRow = {};
+  const scrivi = (campo, valore) => {
+    if (valore && mappa[campo] !== undefined) origRow[intestazioni[mappa[campo]]] = valore;
+  };
+  scrivi('nomeCompleto', nome);
+  if (mappa.nomeCompleto === undefined) scrivi('nome', nome);
+  scrivi('evento', evento === 'Senza data' ? '' : evento);
+  scrivi('contatto', contatto);
+  scrivi('stato', 'Walk-in');
+
+  records.push({
+    id: nuovoId(),
+    nome: nome,
+    evento: evento,
+    fascia: '', slot: '',
+    contatto: contatto,
+    stato: 'Walk-in',
+    persone: '', note: '',
+    presente: presente,
+    orarioCheckin: presente ? new Date().toISOString() : null,
+    walkin: true,
+    origRow: origRow,
+  });
+
+  salvaStato();
+  document.getElementById('dialog-walkin').close();
+  // La ricerca viene ripulita cosi' il nuovo contatto e' subito visibile
+  impostaQuery('');
+  aggiornaTutto();
+  mostraToast('Walk-in aggiunto: ' + nome);
+}
+
+/* ============================================================
+   EXPORT RISULTATI (XLSX)
+   Su iPad Safari puo' aprire il pannello di condivisione:
+   da li' si salva su File o si invia via mail. Va bene cosi'.
+   ============================================================ */
+
+function esportaRisultati() {
+  if (!records.length) { mostraToast('Niente da esportare: carica prima una lista'); return; }
+  if (!libreriaPronta()) { mostraToast('Export non disponibile: libreria non caricata (serve internet)'); return; }
+
+  // Colonne: quelle originali del file, poi le colonne aggiunte dal tool.
+  // L'unione copre anche walk-in creati prima di un import.
+  const colonne = intestazioniOriginali.length ? intestazioniOriginali.slice() : INTESTAZIONI_BASE.slice();
+  for (const r of records) {
+    for (const k in r.origRow) if (!colonne.includes(k)) colonne.push(k);
+  }
+  const colonneFinali = colonne.concat(['Presente', 'Walk-in', 'Orario check-in']);
+
+  const righe = records.map(r => {
+    const riga = {};
+    for (const c of colonne) riga[c] = r.origRow[c] || '';
+    riga['Presente'] = r.presente ? 'Sì' : 'No';
+    riga['Walk-in'] = r.walkin ? 'Sì' : 'No';
+    riga['Orario check-in'] = r.orarioCheckin
+      ? new Date(r.orarioCheckin).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : '';
+    return riga;
+  });
+
+  const foglio = XLSX.utils.json_to_sheet(righe, { header: colonneFinali });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, foglio, 'Check-in');
+  const oggi = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(workbook, 'checkin-risultati-' + oggi + '.xlsx');
+}
+
+/* ============================================================
+   SVUOTA TUTTO (doppia conferma)
+   ============================================================ */
+
+function svuotaTutto() {
+  if (!records.length) { mostraToast("Non c'è niente da cancellare"); return; }
+  if (!confirm('Cancellare TUTTI i dati (prenotati, check-in, walk-in)?')) return;
+  if (!confirm("Sicuro? L'operazione non si può annullare. Hai già esportato i risultati?")) return;
+  records = [];
+  intestazioniOriginali = [];
+  filtroData = '';
+  impostaQuery('');
+  salvaStato();
+  aggiornaTutto();
+  mostraToast('Dati cancellati');
+}
+
+/* ============================================================
+   COLLEGAMENTO EVENTI E AVVIO
+   ============================================================ */
+
+function impostaQuery(testo) {
+  query = testo;
+  const input = document.getElementById('ricerca');
+  if (input.value !== testo) input.value = testo;
+  document.getElementById('btn-pulisci').classList.toggle('visibile', testo.length > 0);
+}
+
+function verificaLibreria() {
+  const avviso = document.getElementById('avviso-libreria');
+  avviso.classList.toggle('visibile', !libreriaPronta());
+}
+
+// Ritenta il caricamento di SheetJS (es. tornata la connessione)
+function riprovaLibreria() {
+  if (libreriaPronta()) { verificaLibreria(); return; }
+  const script = document.createElement('script');
+  script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+  script.onload = () => { verificaLibreria(); mostraToast('Libreria caricata: import ed export attivi'); };
+  script.onerror = () => mostraToast('Ancora niente rete: riprova più tardi');
+  document.head.appendChild(script);
+}
+
+function avvia() {
+  caricaStato();
+  aggiornaTutto();
+
+  // Carica lista
+  const inputFile = document.getElementById('input-file');
+  document.getElementById('btn-carica').addEventListener('click', () => inputFile.click());
+  inputFile.addEventListener('change', async () => {
+    if (inputFile.files.length) await importaFile(inputFile.files[0]);
+    inputFile.value = ''; // permette di ricaricare lo stesso file
+  });
+
+  // Ricerca in tempo reale
+  const campoRicerca = document.getElementById('ricerca');
+  campoRicerca.addEventListener('input', () => {
+    impostaQuery(campoRicerca.value);
+    disegnaLista();
+  });
+  document.getElementById('btn-pulisci').addEventListener('click', () => {
+    impostaQuery('');
+    disegnaLista();
+    campoRicerca.focus();
+  });
+
+  // Chip filtri data (delegazione eventi)
+  document.getElementById('chips').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-evento]');
+    if (!chip) return;
+    filtroData = chip.dataset.evento;
+    aggiornaTutto();
+  });
+
+  // Azioni nella lista: check-in e stati vuoti
+  document.getElementById('lista').addEventListener('click', (e) => {
+    const bottone = e.target.closest('[data-azione]');
+    if (!bottone) return;
+    const azione = bottone.dataset.azione;
+    if (azione === 'presenza') togglePresenza(bottone.dataset.id);
+    if (azione === 'apri-walkin') apriDialogWalkin();
+    if (azione === 'carica') inputFile.click();
+  });
+
+  // Walk-in
+  document.getElementById('btn-walkin-testata').addEventListener('click', apriDialogWalkin);
+  document.getElementById('btn-walkin-annulla').addEventListener('click', () =>
+    document.getElementById('dialog-walkin').close());
+  document.getElementById('form-walkin').addEventListener('submit', (e) => {
+    e.preventDefault();
+    salvaWalkin();
+  });
+
+  // Export e svuota
+  document.getElementById('btn-esporta').addEventListener('click', esportaRisultati);
+  document.getElementById('btn-svuota').addEventListener('click', svuotaTutto);
+
+  // Avviso libreria: controllo dopo che la pagina ha finito di caricare
+  document.getElementById('btn-riprova-libreria').addEventListener('click', riprovaLibreria);
+  window.addEventListener('load', verificaLibreria);
+  setTimeout(verificaLibreria, 4000); // controllo di riserva
+}
+
+avvia();
+</script>
+</body>
+</html>
