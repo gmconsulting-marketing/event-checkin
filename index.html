@@ -129,6 +129,7 @@ body {
 }
 .btn--fantasma:active { background: var(--banco); transform: scale(0.98); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+a.btn { text-decoration: none; } /* i link vestiti da pulsante non vanno sottolineati */
 
 /* ============================================================
    AVVISO LIBRERIA MANCANTE (offline al primo avvio)
@@ -213,6 +214,8 @@ body {
   border-radius: 14px;
 }
 .ricerca input::placeholder { color: var(--grigio); font-weight: 400; }
+/* Niente doppia X: la casella usa solo il pulsante di pulizia del tool */
+.ricerca input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 .ricerca__pulisci {
   position: absolute;
   right: 6px;
@@ -417,6 +420,9 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
 <header class="testata">
   <h1>Check-in Eventi<small>Pop-up retail</small></h1>
   <div class="azioni">
+    <!-- Link al modulo di iscrizione: l'indirizzo viene impostato dal JS
+         (costante URL_MODULO_ISCRIZIONE in cima allo script) -->
+    <a class="btn btn--fantasma" id="link-modulo-testata" target="_blank" rel="noopener">Modulo iscrizione</a>
     <button class="btn btn--fantasma" id="btn-walkin-testata" type="button">+ Walk-in</button>
     <button class="btn btn--fantasma" id="btn-esporta" type="button">Esporta</button>
     <button class="btn" id="btn-carica" type="button">Carica lista</button>
@@ -497,6 +503,10 @@ const CHIAVE_STORAGE = 'gmc-checkin-eventi-v1';
 
 // Massimo di card mostrate insieme (per tenere fluida la pagina)
 const RISULTATI_MAX = 150;
+
+// Modulo di iscrizione per chi non e' prenotato: si apre in una nuova
+// scheda. Per un evento nuovo basta sostituire questo link.
+const URL_MODULO_ISCRIZIONE = 'https://docs.google.com/forms/d/e/1FAIpQLSdgdoU6cl_vhQUwTH90D_xSrzHlQnSQKGTdq0ZmliZc66ZXyg/viewform';
 
 // Nomi di colonna riconosciuti all'import (confronto senza maiuscole,
 // accenti, underscore o trattini). Copre i tre formati usati davvero:
@@ -947,12 +957,13 @@ function disegnaLista() {
 
   const risultati = recordFiltrati();
 
-  // Ricerca senza corrispondenze: proposta walk-in
+  // Ricerca senza corrispondenze: proposta walk-in oppure iscrizione dal modulo
   if (!risultati.length) {
     contenitore.innerHTML =
       '<div class="vuoto">' +
         '<p>Nessuna prenotazione trovata' + (query ? ' per "' + escapeHtml(query) + '"' : '') + '.</p>' +
         '<button class="btn" type="button" data-azione="apri-walkin">Aggiungi nuovo contatto</button>' +
+        '<a class="btn btn--fantasma" href="' + URL_MODULO_ISCRIZIONE + '" target="_blank" rel="noopener">Iscrivi con il modulo</a>' +
       '</div>';
     return;
   }
@@ -1154,6 +1165,8 @@ function riprovaLibreria() {
 
 function avvia() {
   caricaStato();
+  // Il link al modulo di iscrizione prende l'indirizzo dalla CONFIG
+  document.getElementById('link-modulo-testata').href = URL_MODULO_ISCRIZIONE;
   aggiornaTutto();
 
   // Carica lista
