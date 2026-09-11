@@ -104,7 +104,11 @@ body {
   text-transform: uppercase;
   color: var(--grigio);
 }
-.azioni { display: flex; gap: 10px; flex-wrap: wrap; }
+.azioni { display: flex; gap: 10px; flex-wrap: wrap; flex: 1 1 auto; justify-content: flex-end; }
+/* Su schermo stretto i pulsanti si dividono lo spazio in due colonne */
+@media (max-width: 640px) {
+  .azioni .btn { flex: 1 1 calc(50% - 5px); padding: 0 12px; }
+}
 
 /* Pulsanti */
 .btn {
@@ -164,39 +168,46 @@ a.btn { text-decoration: none; } /* i link vestiti da pulsante non vanno sottoli
 /* --- Riepilogo redemption: una scheda per data evento --- */
 .riepilogo {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
   padding-bottom: 10px;
 }
 .riepilogo:empty { display: none; }
 .riepilogo__card {
-  flex: 0 0 auto;
+  flex: 1 1 260px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 12px;
   background: var(--carta);
   border: 1px solid var(--linea);
   border-radius: 14px;
   padding: 10px 16px;
+  min-width: 0;
 }
-.riepilogo__card.attiva { border-color: var(--spritz); border-width: 2px; }
+.riepilogo__card.attiva { border-color: var(--spritz); border-width: 2px; padding: 9px 15px; }
+.riepilogo__testo { display: grid; gap: 2px; min-width: 0; }
 .riepilogo__data {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--grigio);
-  max-width: 130px;
 }
-.riepilogo__numeri { font-size: 14px; color: var(--grigio); white-space: nowrap; }
+.riepilogo__numeri { font-size: 15px; color: var(--grigio); line-height: 1.25; }
 .riepilogo__numeri strong { color: var(--inchiostro); font-variant-numeric: tabular-nums; }
 .riepilogo__perc {
-  font-size: 30px;
+  flex: 0 0 auto;
+  font-size: 28px;
   font-weight: 800;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
   color: var(--verde);
+}
+
+@media (max-width: 640px) {
+  .riepilogo { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .riepilogo__card { flex: 0 0 auto; min-width: 230px; }
 }
 
 /* --- Campo di ricerca grande --- */
@@ -264,6 +275,7 @@ a.btn { text-decoration: none; } /* i link vestiti da pulsante non vanno sottoli
   margin: 0 auto;
   padding: 16px 20px 40px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 .card {
@@ -283,7 +295,7 @@ a.btn { text-decoration: none; } /* i link vestiti da pulsante non vanno sottoli
 }
 .card__info { flex: 1; min-width: 0; }
 .card__nome { font-size: 21px; font-weight: 800; letter-spacing: -0.01em; overflow-wrap: anywhere; }
-.card__meta { font-size: 15px; color: var(--grigio); margin-top: 2px; }
+.card__meta { font-size: 15px; color: var(--grigio); margin-top: 2px; overflow-wrap: anywhere; }
 .card__sub {
   font-size: 14px;
   color: var(--grigio);
@@ -292,6 +304,12 @@ a.btn { text-decoration: none; } /* i link vestiti da pulsante non vanno sottoli
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+/* Su telefono il pulsante Presente scende sotto il nome, a tutta larghezza */
+@media (max-width: 520px) {
+  .card { flex-wrap: wrap; }
+  .card .btn-presente { flex: 1 1 100%; }
 }
 .badge {
   display: inline-block;
@@ -499,14 +517,14 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
    ============================================================ */
 
 // Chiave con cui i dati vengono salvati nel browser del tablet
-const CHIAVE_STORAGE = 'gmc-checkin-eventi-v1';
+const CHIAVE_STORAGE = 'gmc-checkin-eventi-v2'; // v2 dal 2026-09-11: nuova stagione, il tablet riparte da lista vuota
 
 // Massimo di card mostrate insieme (per tenere fluida la pagina)
 const RISULTATI_MAX = 150;
 
 // Modulo di iscrizione per chi non e' prenotato: si apre in una nuova
 // scheda. Per un evento nuovo basta sostituire questo link.
-const URL_MODULO_ISCRIZIONE = 'https://docs.google.com/forms/d/e/1FAIpQLSdgdoU6cl_vhQUwTH90D_xSrzHlQnSQKGTdq0ZmliZc66ZXyg/viewform';
+const URL_MODULO_ISCRIZIONE = 'https://forms.gle/KTcc4tnTfyT2qQTH9';
 
 // Nomi di colonna riconosciuti all'import (confronto senza maiuscole,
 // accenti, underscore o trattini). Copre i tre formati usati davvero:
@@ -918,10 +936,12 @@ function disegnaRiepilogo() {
     const perc = prenotati.length ? Math.round(presenti / prenotati.length * 100) : 0;
     const attiva = filtroData === evento ? ' attiva' : '';
     return '<div class="riepilogo__card' + attiva + '">' +
-      '<span class="riepilogo__data">' + escapeHtml(evento) + '</span>' +
-      '<span class="riepilogo__numeri">' +
-        '<strong>' + presenti + '</strong>/' + prenotati.length + ' presenti' +
-        (walkins ? ' &middot; <strong>+' + walkins + '</strong> walk-in' : '') +
+      '<span class="riepilogo__testo">' +
+        '<span class="riepilogo__data">' + escapeHtml(evento) + '</span>' +
+        '<span class="riepilogo__numeri">' +
+          '<strong>' + presenti + '</strong>/' + prenotati.length + ' presenti' +
+          (walkins ? ' &middot; <strong>+' + walkins + '</strong> walk-in' : '') +
+        '</span>' +
       '</span>' +
       '<span class="riepilogo__perc">' + perc + '%</span>' +
     '</div>';
@@ -1114,6 +1134,11 @@ function esportaRisultati() {
   });
 
   const foglio = XLSX.utils.json_to_sheet(righe, { header: colonneFinali });
+  // Larghezza colonne: si adatta al contenuto, tra 10 e 40 caratteri
+  foglio['!cols'] = colonneFinali.map(c => {
+    const lunghezza = Math.max(c.length, ...righe.map(r => String(r[c] || '').length));
+    return { wch: Math.min(40, Math.max(10, lunghezza + 2)) };
+  });
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, foglio, 'Check-in');
   const oggi = new Date().toISOString().slice(0, 10);
