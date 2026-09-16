@@ -516,6 +516,10 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
       <input type="tel" id="walkin-telefono" inputmode="tel" autocomplete="off">
     </div>
     <div class="campo">
+      <label for="walkin-email">Email (facoltativa)</label>
+      <input type="email" id="walkin-email" inputmode="email" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="campo">
       <label for="walkin-evento">Evento / data</label>
       <select id="walkin-evento"></select>
     </div>
@@ -569,8 +573,8 @@ const URL_MODULO_ISCRIZIONE = 'https://forms.gle/KTcc4tnTfyT2qQTH9';
 
 // Privacy: titolare del trattamento citato nel modulo walk-in e link
 // all'informativa completa. Se il link e' vuoto, la frase esce senza link.
-const NOME_TITOLARE = 'Fody';
-const URL_PRIVACY_POLICY = '';
+const NOME_TITOLARE = 'Fody Società Benefit S.r.l.';
+const URL_PRIVACY_POLICY = 'https://www.fodyfabrics.com/privacy-policy/';
 
 // Valori che contano come "consenso dato" nelle colonne importate
 const VALORE_SI = /^(s[iì]|yes|y|true|1|x|ok|checked|accetto|acconsento|autorizzo)(?![a-zà-ù])/i;
@@ -604,7 +608,7 @@ const ALIAS_COLONNE = {
 };
 
 // Intestazioni usate per i walk-in se non e' ancora stata caricata una lista
-const INTESTAZIONI_BASE = ['Nome cliente', 'Data', 'Numero di telefono', 'Stato prenotazione'];
+const INTESTAZIONI_BASE = ['Nome cliente', 'Data', 'Numero di telefono', 'Email', 'Stato prenotazione'];
 
 // Righe di prova generate dai form (es. "test lead: dummy data" di Meta): ignorate
 const RIGA_DI_TEST = /test lead|dummy data/i;
@@ -1131,6 +1135,7 @@ function apriDialogWalkin() {
   // Nome precompilato con quanto digitato nella ricerca
   document.getElementById('walkin-nome').value = query.trim();
   document.getElementById('walkin-telefono').value = '';
+  document.getElementById('walkin-email').value = '';
   document.getElementById('walkin-presente').checked = true;
   // Le spunte privacy ripartono sempre vuote: il consenso e' per persona
   document.getElementById('walkin-privacy').checked = false;
@@ -1144,6 +1149,7 @@ function salvaWalkin() {
   if (!nome) return;
   const evento = document.getElementById('walkin-evento').value || 'Senza data';
   const telefono = document.getElementById('walkin-telefono').value.trim();
+  const email = document.getElementById('walkin-email').value.trim();
   const presente = document.getElementById('walkin-presente').checked;
   const privacy = document.getElementById('walkin-privacy').checked;
   const consensoMarketing = document.getElementById('walkin-marketing').checked;
@@ -1162,6 +1168,7 @@ function salvaWalkin() {
   if (mappa.nomeCompleto === undefined) scrivi('nome', nome);
   scrivi('evento', evento === 'Senza data' ? '' : evento);
   scrivi('telefono', telefono);
+  scrivi('email', email);
   scrivi('stato', 'Walk-in');
   scrivi('privacy', 'Sì');
   scrivi('consensoMarketing', consensoMarketing ? 'Sì' : 'No');
@@ -1173,7 +1180,7 @@ function salvaWalkin() {
     evento: evento,
     fascia: '', slot: '',
     telefono: telefono,
-    email: '',
+    email: email,
     stato: 'Walk-in',
     persone: '', note: '',
     presente: presente,
@@ -1210,6 +1217,13 @@ function esportaRisultati() {
   for (const r of records) {
     for (const k in r.origRow) if (!colonne.includes(k)) colonne.push(k);
   }
+  // Telefono ed email dei walk-in escono anche se il file importato
+  // non aveva quella colonna: si aggiunge una colonna dedicata
+  const mappaExport = mappaColonne(colonne);
+  const colTelefono = mappaExport.telefono === undefined && records.some(r => r.telefono) ? 'Numero di telefono' : null;
+  const colEmail = mappaExport.email === undefined && records.some(r => r.email) ? 'Email' : null;
+  if (colTelefono) colonne.push(colTelefono);
+  if (colEmail) colonne.push(colEmail);
   const colonneFinali = colonne.concat(['Presente', 'Walk-in', 'Orario check-in',
     'Privacy letta', 'Consenso marketing', 'Consenso profilazione', 'Data consenso']);
   const dataIt = (iso) => iso
@@ -1219,6 +1233,8 @@ function esportaRisultati() {
   const righe = records.map(r => {
     const riga = {};
     for (const c of colonne) riga[c] = r.origRow[c] || '';
+    if (colTelefono && r.telefono) riga[colTelefono] = r.telefono;
+    if (colEmail && r.email) riga[colEmail] = r.email;
     riga['Presente'] = r.presente ? 'Sì' : 'No';
     riga['Walk-in'] = r.walkin ? 'Sì' : 'No';
     riga['Orario check-in'] = dataIt(r.orarioCheckin);
