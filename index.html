@@ -394,6 +394,29 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
 .campo--check label { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--inchiostro); }
 .dialog__azioni { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* Blocco privacy e consensi nel modulo walk-in */
+.consensi {
+  border: 2px solid var(--linea);
+  border-radius: 12px;
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 10px;
+}
+.consensi legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--grigio);
+}
+.consensi__testo { font-size: 14px; color: var(--grigio); line-height: 1.4; }
+.consensi__testo a { color: var(--spritz); font-weight: 700; }
+.consenso { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; line-height: 1.35; cursor: pointer; }
+.consenso input { flex: 0 0 auto; width: 26px; height: 26px; margin-top: 1px; accent-color: var(--verde); }
+.consenso small { color: var(--grigio); font-size: 13px; }
+.badge--consenso { background: var(--verde-tinta); border-color: var(--verde); color: var(--verde); }
+
 /* ============================================================
    PIE' DI PAGINA + TOAST
    ============================================================ */
@@ -500,6 +523,24 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
       <input type="checkbox" id="walkin-presente" checked>
       <label for="walkin-presente">Segna subito come presente</label>
     </div>
+    <!-- Privacy e consensi: da far spuntare al cliente. Testi e link
+         nella CONFIG del JS (URL_PRIVACY_POLICY, NOME_TITOLARE) -->
+    <fieldset class="consensi">
+      <legend>Privacy e consensi</legend>
+      <p class="consensi__testo" id="consensi-testo"></p>
+      <label class="consenso">
+        <input type="checkbox" id="walkin-privacy" required>
+        <span>Ho letto l'informativa privacy <small>(obbligatorio)</small></span>
+      </label>
+      <label class="consenso">
+        <input type="checkbox" id="walkin-marketing">
+        <span>Acconsento a ricevere comunicazioni commerciali: novità, promozioni e inviti a eventi</span>
+      </label>
+      <label class="consenso">
+        <input type="checkbox" id="walkin-profilazione">
+        <span>Acconsento alla profilazione: offerte personalizzate in base a preferenze e acquisti</span>
+      </label>
+    </fieldset>
     <div class="dialog__azioni">
       <button class="btn btn--fantasma" type="button" id="btn-walkin-annulla">Annulla</button>
       <button class="btn" type="submit">Salva walk-in</button>
@@ -526,6 +567,14 @@ const RISULTATI_MAX = 150;
 // scheda. Per un evento nuovo basta sostituire questo link.
 const URL_MODULO_ISCRIZIONE = 'https://forms.gle/KTcc4tnTfyT2qQTH9';
 
+// Privacy: titolare del trattamento citato nel modulo walk-in e link
+// all'informativa completa. Se il link e' vuoto, la frase esce senza link.
+const NOME_TITOLARE = 'Fody';
+const URL_PRIVACY_POLICY = '';
+
+// Valori che contano come "consenso dato" nelle colonne importate
+const VALORE_SI = /^(s[iì]|yes|y|true|1|x|ok|checked|accetto|acconsento|autorizzo)(?![a-zà-ù])/i;
+
 // Nomi di colonna riconosciuti all'import (confronto senza maiuscole,
 // accenti, underscore o trattini). Copre i tre formati usati davvero:
 // gestionale prenotazioni, export lead Meta Ads, risposte Google Forms.
@@ -547,6 +596,11 @@ const ALIAS_COLONNE = {
   stato:        ['stato prenotazione', 'lead status', 'stato', 'status'],
   persone:      ['n. persone', 'persone', 'pax', 'ospiti'],
   note:         ['note', 'commenti'],
+  // Consensi raccolti dal form di prenotazione (Meta e Google Forms
+  // esportano una colonna per ogni spunta del modulo)
+  privacy:              ['informativa privacy', 'privacy policy', 'privacy'],
+  consensoMarketing:    ['consenso marketing', 'comunicazioni commerciali', 'newsletter', 'marketing'],
+  consensoProfilazione: ['consenso profilazione', 'profilazione'],
 };
 
 // Intestazioni usate per i walk-in se non e' ancora stata caricata una lista
@@ -571,6 +625,8 @@ let query = '';                // testo digitato nella ricerca
      presente: true/false,
      orarioCheckin: '2026-07-21T15:30:00.000Z' oppure null,
      walkin: true/false,
+     privacy, consensoMarketing, consensoProfilazione: true/false,
+     orarioConsenso: data ISO del consenso raccolto al banco, oppure null,
      origRow: { 'Nome cliente': '...', ... }   riga originale del file,
                conservata cosi' com'e' per non perdere nulla all'export
    }
@@ -656,6 +712,13 @@ function caricaStato() {
     const dati = JSON.parse(grezzo);
     records = Array.isArray(dati.records) ? dati.records : [];
     intestazioniOriginali = Array.isArray(dati.intestazioniOriginali) ? dati.intestazioniOriginali : [];
+    // Record salvati prima dei consensi: campi a false, non si perde nulla
+    for (const r of records) {
+      r.privacy = !!r.privacy;
+      r.consensoMarketing = !!r.consensoMarketing;
+      r.consensoProfilazione = !!r.consensoProfilazione;
+      r.orarioConsenso = r.orarioConsenso || null;
+    }
     // Migrazione dalla versione 1: il vecchio campo unico "contatto"
     // diventa telefono (se contiene un numero) oppure email
     if (dati.versione === 1) {
@@ -762,6 +825,10 @@ function estraiRecords(righe) {
       presente: false,
       orarioCheckin: null,
       walkin: false,
+      privacy: VALORE_SI.test(val(riga, 'privacy')),
+      consensoMarketing: VALORE_SI.test(val(riga, 'consensoMarketing')),
+      consensoProfilazione: VALORE_SI.test(val(riga, 'consensoProfilazione')),
+      orarioConsenso: null,
       origRow: origRow,
     });
   }
@@ -810,6 +877,10 @@ function uniscoRecords(nuovi) {
       ex.telefono = n.telefono; ex.email = n.email; ex.stato = n.stato;
       ex.persone = n.persone; ex.note = n.note;
       ex.origRow = n.origRow; ex.walkin = false;
+      // Un consenso raccolto al banco resta anche se il file non lo riporta
+      ex.privacy = ex.privacy || n.privacy;
+      ex.consensoMarketing = ex.consensoMarketing || n.consensoMarketing;
+      ex.consensoProfilazione = ex.consensoProfilazione || n.consensoProfilazione;
       aggiornati++;
     } else {
       records.push(n);
@@ -998,6 +1069,8 @@ function disegnaLista() {
     if (r.email) sub.push(escapeHtml(r.email));
     if (r.persone) sub.push(escapeHtml(r.persone) + ' pers.');
     if (r.note) sub.push(escapeHtml(r.note));
+    if (r.consensoMarketing) sub.push('<span class="badge badge--consenso">Marketing</span>');
+    if (r.consensoProfilazione) sub.push('<span class="badge badge--consenso">Profilazione</span>');
 
     return '<article class="card' + (r.presente ? ' card--presente' : '') + '">' +
       '<div class="card__info">' +
@@ -1023,7 +1096,9 @@ function disegnaContatore() {
   const el = document.getElementById('contatore');
   if (!records.length) { el.textContent = ''; return; }
   const presenti = records.filter(r => r.presente).length;
-  el.textContent = records.length + ' contatti in memoria, ' + presenti + ' presenti';
+  const marketing = records.filter(r => r.consensoMarketing).length;
+  el.textContent = records.length + ' contatti in memoria, ' + presenti + ' presenti, ' +
+    marketing + ' con consenso marketing';
 }
 
 /* ============================================================
@@ -1057,6 +1132,10 @@ function apriDialogWalkin() {
   document.getElementById('walkin-nome').value = query.trim();
   document.getElementById('walkin-telefono').value = '';
   document.getElementById('walkin-presente').checked = true;
+  // Le spunte privacy ripartono sempre vuote: il consenso e' per persona
+  document.getElementById('walkin-privacy').checked = false;
+  document.getElementById('walkin-marketing').checked = false;
+  document.getElementById('walkin-profilazione').checked = false;
   document.getElementById('dialog-walkin').showModal();
 }
 
@@ -1066,6 +1145,10 @@ function salvaWalkin() {
   const evento = document.getElementById('walkin-evento').value || 'Senza data';
   const telefono = document.getElementById('walkin-telefono').value.trim();
   const presente = document.getElementById('walkin-presente').checked;
+  const privacy = document.getElementById('walkin-privacy').checked;
+  const consensoMarketing = document.getElementById('walkin-marketing').checked;
+  const consensoProfilazione = document.getElementById('walkin-profilazione').checked;
+  if (!privacy) { mostraToast('Serve la spunta sull\'informativa privacy'); return; }
 
   // Riga originale costruita con le intestazioni del file caricato,
   // cosi' il walk-in esce allineato agli altri nell'export
@@ -1080,6 +1163,9 @@ function salvaWalkin() {
   scrivi('evento', evento === 'Senza data' ? '' : evento);
   scrivi('telefono', telefono);
   scrivi('stato', 'Walk-in');
+  scrivi('privacy', 'Sì');
+  scrivi('consensoMarketing', consensoMarketing ? 'Sì' : 'No');
+  scrivi('consensoProfilazione', consensoProfilazione ? 'Sì' : 'No');
 
   records.push({
     id: nuovoId(),
@@ -1093,6 +1179,10 @@ function salvaWalkin() {
     presente: presente,
     orarioCheckin: presente ? new Date().toISOString() : null,
     walkin: true,
+    privacy: privacy,
+    consensoMarketing: consensoMarketing,
+    consensoProfilazione: consensoProfilazione,
+    orarioConsenso: new Date().toISOString(),
     origRow: origRow,
   });
 
@@ -1120,16 +1210,22 @@ function esportaRisultati() {
   for (const r of records) {
     for (const k in r.origRow) if (!colonne.includes(k)) colonne.push(k);
   }
-  const colonneFinali = colonne.concat(['Presente', 'Walk-in', 'Orario check-in']);
+  const colonneFinali = colonne.concat(['Presente', 'Walk-in', 'Orario check-in',
+    'Privacy letta', 'Consenso marketing', 'Consenso profilazione', 'Data consenso']);
+  const dataIt = (iso) => iso
+    ? new Date(iso).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '';
 
   const righe = records.map(r => {
     const riga = {};
     for (const c of colonne) riga[c] = r.origRow[c] || '';
     riga['Presente'] = r.presente ? 'Sì' : 'No';
     riga['Walk-in'] = r.walkin ? 'Sì' : 'No';
-    riga['Orario check-in'] = r.orarioCheckin
-      ? new Date(r.orarioCheckin).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : '';
+    riga['Orario check-in'] = dataIt(r.orarioCheckin);
+    riga['Privacy letta'] = r.privacy ? 'Sì' : 'No';
+    riga['Consenso marketing'] = r.consensoMarketing ? 'Sì' : 'No';
+    riga['Consenso profilazione'] = r.consensoProfilazione ? 'Sì' : 'No';
+    riga['Data consenso'] = dataIt(r.orarioConsenso);
     return riga;
   });
 
@@ -1192,6 +1288,12 @@ function avvia() {
   caricaStato();
   // Il link al modulo di iscrizione prende l'indirizzo dalla CONFIG
   document.getElementById('link-modulo-testata').href = URL_MODULO_ISCRIZIONE;
+  // Frase privacy nel modulo walk-in, con link all'informativa se configurato
+  document.getElementById('consensi-testo').innerHTML =
+    'I dati sono trattati da ' + escapeHtml(NOME_TITOLARE) + ' per gestire l\'evento e, solo con il consenso, per finalità commerciali. ' +
+    (URL_PRIVACY_POLICY
+      ? '<a href="' + escapeHtml(URL_PRIVACY_POLICY) + '" target="_blank" rel="noopener">Leggi l\'informativa completa</a>'
+      : 'L\'informativa completa è disponibile al banco.');
   aggiornaTutto();
 
   // Carica lista
