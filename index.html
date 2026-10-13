@@ -459,7 +459,7 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
 
 <!-- ============ INTESTAZIONE ============ -->
 <header class="testata">
-  <h1>Check-in Eventi<small>Pop-up retail</small></h1>
+  <h1>Check-in Eventi<small>Fody · Pop-up Alba · 14, 21 e 23 ottobre</small></h1>
   <div class="azioni">
     <!-- Link al modulo di iscrizione: l'indirizzo viene impostato dal JS
          (costante URL_MODULO_ISCRIZIONE in cima allo script) -->
@@ -562,7 +562,18 @@ dialog::backdrop { background: rgba(23,24,28,0.5); }
    ============================================================ */
 
 // Chiave con cui i dati vengono salvati nel browser del tablet
-const CHIAVE_STORAGE = 'gmc-checkin-eventi-v2'; // v2 dal 2026-09-11: nuova stagione, il tablet riparte da lista vuota
+// v3 dal 2026-10-13: pop-up Alba, il tablet riparte da lista vuota.
+// I dati di Reggio Emilia restano nel browser sotto la chiave v2, non vengono cancellati.
+const CHIAVE_STORAGE = 'gmc-checkin-eventi-v3';
+
+// Date del pop-up in corso e nome dell'evento di ogni data. Le date
+// compaiono nel modulo walk-in anche prima di caricare la loro lista.
+// Per un pop-up nuovo basta sostituire queste righe.
+const EVENTI_PREVISTI = [
+  { data: '14 Ottobre', nome: 'Meet and Greet' },
+  { data: '21 Ottobre', nome: 'Meet and Greet' },
+  { data: '23 Ottobre', nome: 'Aperitivo Inclusivo' },
+];
 
 // Massimo di card mostrate insieme (per tenere fluida la pagina)
 const RISULTATI_MAX = 150;
@@ -587,13 +598,14 @@ const ALIAS_COLONNE = {
   nomeCompleto: ['nome cliente', 'nome e cognome', 'full name', 'nominativo', 'cliente'],
   nome:         ['nome'],
   cognome:      ['cognome'],
-  evento:       ['data evento', 'data'],
+  // "Giorno" + "Orario": formato della lista unificata Meta + modulo organico
+  evento:       ['data evento', 'giorno', 'data'],
   // Colonna unica "data + orario scelto" (Meta Ads e Google Forms):
   // viene divisa in data evento e slot orario
   sceltaDataOra: ['scegli data e orario', 'a quale slot orario', 'data e orario', 'giorno e orario'],
   fascia:       ['fascia'],
   orarioFascia: ['orario fascia'],
-  slot:         ['slot'],
+  slot:         ['slot', 'orario'],
   orarioSlot:   ['orario slot'],
   telefono:     ['numero di telefono', 'phone number', 'telefono', 'cellulare', 'contatto', 'phone', 'tel'],
   email:        ['e mail', 'email', 'mail'],
@@ -808,6 +820,8 @@ function estraiRecords(righe) {
       if (!evento) evento = m ? m[1].trim() : scelta;
       if (!slot && m && m[2]) slot = 'ore ' + m[2].trim();
     }
+    // Orario scritto da solo ("10:10"): stesso formato degli altri file
+    if (/^\d{1,2}[:.]\d{2}$/.test(slot)) slot = 'ore ' + slot;
 
     // Riga originale conservata per intero (anche le colonne non riconosciute)
     const origRow = {};
@@ -946,24 +960,56 @@ async function importaFile(file) {
    RICERCA E FILTRO
    ============================================================ */
 
-// Tutte le date evento presenti, in ordine cronologico quando possibile
-function elencoEventi() {
+// Data evento in numero AAAAMMGG per ordinarle. Capisce "12/09/2026",
+// "2026-09-12" e "14 Ottobre" (senza anno vale l'anno in corso). Altrimenti null.
+const MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno',
+  'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+function valoreData(e) {
+  const m = e.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (m) {
+    let anno = parseInt(m[3], 10); if (anno < 100) anno += 2000;
+    return anno * 10000 + parseInt(m[2], 10) * 100 + parseInt(m[1], 10);
+  }
+  const iso = e.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return parseInt(iso[1], 10) * 10000 + parseInt(iso[2], 10) * 100 + parseInt(iso[3], 10);
+  const testo = e.match(/(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?/i);
+  const mese = testo ? MESI.indexOf(normalizza(testo[2])) : -1;
+  if (mese !== -1) {
+    const anno = testo[3] ? parseInt(testo[3], 10) : new Date().getFullYear();
+    return anno * 10000 + (mese + 1) * 100 + parseInt(testo[1], 10);
+  }
+  return null;
+}
+
+// Nome dell'evento di una data ("Meet and Greet"), se e' tra gli EVENTI_PREVISTI
+function nomeEvento(data) {
+  const e = EVENTI_PREVISTI.find(x => normalizza(x.data) === normalizza(data));
+  return e ? e.nome : '';
+}
+
+// Data evento di oggi, se e' una di quelle in lista: serve al walk-in
+function eventoDiOggi(eventi) {
+  const oggi = new Date();
+  const valoreOggi = oggi.getFullYear() * 10000 + (oggi.getMonth() + 1) * 100 + oggi.getDate();
+  return eventi.find(e => valoreData(e) === valoreOggi) || '';
+}
+
+// Tutte le date evento presenti, in ordine cronologico quando possibile.
+// Con conPreviste: true aggiunge anche le date di EVENTI_PREVISTI senza lista.
+function elencoEventi(conPreviste) {
   const visti = new Set();
   const eventi = [];
   for (const r of records) {
     if (!visti.has(r.evento)) { visti.add(r.evento); eventi.push(r.evento); }
   }
-  // Ordina interpretando date tipo "12/09/2026" o "2026-09-12"; altrimenti alfabetico
-  const valore = (e) => {
-    const m = e.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
-    if (m) {
-      let anno = parseInt(m[3], 10); if (anno < 100) anno += 2000;
-      return anno * 10000 + parseInt(m[2], 10) * 100 + parseInt(m[1], 10);
+  if (conPreviste) {
+    for (const e of EVENTI_PREVISTI) {
+      const data = canonicalizzaEvento(e.data);
+      if (!visti.has(data)) { visti.add(data); eventi.push(data); }
     }
-    const iso = e.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (iso) return parseInt(iso[1], 10) * 10000 + parseInt(iso[2], 10) * 100 + parseInt(iso[3], 10);
-    return null;
-  };
+  }
+  // Ordina per data quando la riconosce; altrimenti alfabetico
+  const valore = valoreData;
   return eventi.sort((a, b) => {
     const va = valore(a), vb = valore(b);
     if (va !== null && vb !== null) return va - vb;
@@ -1012,7 +1058,8 @@ function disegnaRiepilogo() {
     const attiva = filtroData === evento ? ' attiva' : '';
     return '<div class="riepilogo__card' + attiva + '">' +
       '<span class="riepilogo__testo">' +
-        '<span class="riepilogo__data">' + escapeHtml(evento) + '</span>' +
+        '<span class="riepilogo__data">' + escapeHtml(evento) +
+          (nomeEvento(evento) ? ' &middot; ' + escapeHtml(nomeEvento(evento)) : '') + '</span>' +
         '<span class="riepilogo__numeri">' +
           '<strong>' + presenti + '</strong>/' + prenotati.length + ' presenti' +
           (walkins ? ' &middot; <strong>+' + walkins + '</strong> walk-in' : '') +
@@ -1125,12 +1172,14 @@ function togglePresenza(id) {
 
 function apriDialogWalkin() {
   const select = document.getElementById('walkin-evento');
-  const eventi = elencoEventi();
+  const eventi = elencoEventi(true);
   select.innerHTML =
-    eventi.map(e => '<option value="' + escapeHtml(e) + '">' + escapeHtml(e) + '</option>').join('') +
+    eventi.map(e => '<option value="' + escapeHtml(e) + '">' + escapeHtml(e) +
+      (nomeEvento(e) ? ' · ' + escapeHtml(nomeEvento(e)) : '') + '</option>').join('') +
     '<option value="">Senza data</option>';
-  // Preseleziona il filtro data attivo, se c'e'
-  if (filtroData) select.value = filtroData;
+  // Preseleziona il filtro data attivo, altrimenti l'evento di oggi
+  const preferito = filtroData || eventoDiOggi(eventi);
+  if (preferito) select.value = preferito;
 
   // Nome precompilato con quanto digitato nella ricerca
   document.getElementById('walkin-nome').value = query.trim();
